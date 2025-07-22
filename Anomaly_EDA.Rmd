@@ -1,0 +1,403 @@
+---
+title: "Anomaly_EDA"
+author: "Andrew Jossi"
+date: "2024-10-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(ggplot2)
+library(glmnet)
+library(lubridate)
+library(stringr)
+library(readxl)
+```
+
+## Model
+
+```{r, echo=FALSE}
+modeldata <- read_csv("modeldata.csv")
+#View(modeldata)
+
+#add a datetime column
+modeldata$datetime <- as.POSIXct(
+  paste(modeldata$year.y, modeldata$month.y, modeldata$day.y, modeldata$hour.y, modeldata$minute.y),
+  format = "%Y %m %d %H %M",
+  tz = "UTC"  
+)
+
+```
+
+Created a subset of the modeldata for June 2018 as there were 57 anomalies in that month
+```{r, echo=FALSE}
+june_2018_data <- subset(modeldata, month.y == 6 & year.y == 2018)
+
+#head(june_2018_data)
+```
+
+
+## Small Irradiances Graphed over time with Anomalies
+```{r, echo=FALSE}
+ggplot(june_2018_data, aes(x = datetime, y = irr_256)) +
+  geom_line(color = "blue") +                           # Line for irr_256 over time
+  geom_point(data = subset(june_2018_data, binary == 1), 
+             aes(x = datetime, y = irr_256), 
+             color = "red", size = 2) +                 # Red points for anomalies
+  labs(title = "irr_256 over Time with Anomalies Highlighted",
+       x = "Time",
+       y = "irr_256") +
+  theme_minimal()
+```
+No apparent relationship between irr_256 and anomalies. It appears as though two solar events occur in this month (solar flare, cme,...). NOAA's alert system sent out alerts for a Geomagnetic storm with K-index of 5 in the begining of the month and an Electron 2MeV Integral Flux exceeded 1000pfu alert in the latter part of the month. 
+
+
+## Large Irradiances Graphed over time with Anomalies
+```{r, echo=FALSE}
+ggplot(june_2018_data, aes(x = datetime, y = irr_1175)) +
+  geom_line(color = "blue") +                           # Line for irr_1175 over time
+  geom_point(data = subset(june_2018_data, binary == 1), 
+             aes(x = datetime, y = irr_1175), 
+             color = "red", size = 2) +                 # Red points for anomalies
+  labs(title = "irr_1175 over Time with Anomalies Highlighted",
+       x = "Time",
+       y = "irr_1175") +
+  theme_minimal()
+```
+Anomalies appear to occur when many spikes happen in a short window of time, about 7 days.
+
+```{r, echo=FALSE}
+ggplot(june_2018_data, aes(x = datetime, y = irr_1216)) +
+  geom_line(color = "blue") +                           # Line for irr_1216 over time
+  geom_point(data = subset(june_2018_data, binary == 1), 
+             aes(x = datetime, y = irr_1216), 
+             color = "red", size = 2) +                 # Red points for anomalies
+  labs(title = "irr_1216 over Time with Anomalies Highlighted",
+       x = "Time",
+       y = "irr_1216") +
+  theme_minimal()
+```
+Higher irradiance spikes seems to be more related to anomalies, as anomalies occur at nearly every spike. 
+
+
+```{r, echo=FALSE}
+ggplot(june_2018_data, aes(x = datetime, y = irr_1335)) +
+  geom_line(color = "blue") +                           # Line for irr_1335 over time
+  geom_point(data = subset(june_2018_data, binary == 1), 
+             aes(x = datetime, y = irr_1335), 
+             color = "red", size = 2) +                 # Red points for anomalies
+  labs(title = "irr_1335 over Time with Anomalies Highlighted",
+       x = "Time",
+       y = "irr_1335") +
+  theme_minimal()
+```
+
+
+```{r, echo=FALSE}
+ggplot(june_2018_data, aes(x = datetime, y = irr_1405)) +
+  geom_line(color = "blue") +                           # Line for irr_1405 over time
+  geom_point(data = subset(june_2018_data, binary == 1), 
+             aes(x = datetime, y = irr_1405), 
+             color = "red", size = 2) +                 # Red points for anomalies
+  labs(title = "irr_1405 over Time with Anomalies Highlighted",
+       x = "Time",
+       y = "irr_1405") +
+  theme_minimal()
+```
+
+## MGII graphs
+```{r, echo=FALSE}
+ggplot(june_2018_data, aes(x = datetime, y = MgII_EXIS)) +
+  geom_line(color = "blue") +                           # Line for MgII_EXIS  over time
+  geom_point(data = subset(june_2018_data, binary == 1), 
+             aes(x = datetime, y = MgII_EXIS), 
+             color = "red", size = 2) +                 # Red points for anomalies
+  labs(title = "MgII_EXIS over Time with Anomalies Highlighted",
+       x = "Time",
+       y = "MgII_EXIS") +
+  theme_minimal()
+```
+
+```{r, echo=FALSE}
+ggplot(june_2018_data, aes(x = datetime, y = MgII_standard)) +
+  geom_line(color = "blue") +                           # Line for MgII_standard  over time
+  geom_point(data = subset(june_2018_data, binary == 1), 
+             aes(x = datetime, y = MgII_standard), 
+             color = "red", size = 2) +                 # Red points for anomalies
+  labs(title = "MgII_standard over Time with Anomalies Highlighted",
+       x = "Time",
+       y = "MgII_standard") +
+  theme_minimal()
+
+```
+MgII seems to have a lagged correlation with anomalies. They seem to occur during the decrease of MgII after a large spike.
+
+
+## May 2018 data
+
+Feel free to change the month and year assignment to explore other time periods
+```{r, echo=FALSE}
+may_2018_data <- subset(modeldata, month.y == 5 & year.y == 2018)
+
+#head(may_2018_data)
+```
+
+
+```{r, echo=FALSE}
+ggplot(may_2018_data, aes(x = datetime, y = irr_1175)) +
+  geom_line(color = "blue") +                           # Line for irr_1175  over time
+  geom_point(data = subset(may_2018_data, binary == 1), 
+             aes(x = datetime, y = irr_1175), 
+             color = "red", size = 2) +                 # Red points for anomalies
+  labs(title = "irr_1175 over Time with Anomalies Highlighted",
+       x = "Time",
+       y = "irr_1175") +
+  theme_minimal()
+```
+
+
+
+```{r, echo=FALSE}
+ggplot(may_2018_data, aes(x = datetime, y = irr_1405)) +
+  geom_line(color = "blue") +
+  geom_point(data = subset(may_2018_data, binary == 1), 
+             aes(x = datetime, y = irr_1405), 
+             color = "red", size = 2) +
+  labs(title = "irr_1405 over Time with Anomalies Highlighted",
+       x = "Datetime",
+       y = "irr_1405") +
+  theme_minimal()
+```
+
+# Whole data set (4 year) patterns
+```{r, echo=FALSE, eval=FALSE}
+colnames(modeldata)
+```
+Change this graph to any of the above column names to explore relationships. All `irr_###` columns relate to Extreme Ultraviolet Light (EUV) data and xrsb relates to x-ray data. 
+
+```{r, echo=FALSE}
+ggplot(modeldata, aes(x = datetime, y = irr_1405)) +
+  geom_line(color = "blue") +                           # Line for irr_1405 over time
+  geom_point(data = subset(modeldata, binary == 1), 
+             aes(x = datetime, y = irr_1405), 
+             color = "red", size = 2) +                 # Red points for anomalies
+  labs(title = "irr_1405 over Time with Anomalies Highlighted",
+       x = "Time",
+       y = "irr_1405") +
+  theme_minimal()
+```
+Wave-like patterns for irradiances. 
+
+```{r, echo=FALSE}
+# Assuming modeldata has columns: datetime, irr_1405, irr_256, irr_284, etc.
+ggplot(modeldata, aes(x = datetime)) +
+  geom_line(aes(y = irr_1405, color = "irr_256")) +    # Line for irr_1405 in blue
+  geom_line(aes(y = irr_256, color = "irr_1175")) +      # Line for irr_256 in a different color
+  geom_line(aes(y = irr_284, color = "irr_1216")) +      # Line for irr_284 in another color
+  geom_line(aes(y = irr_304, color = "irr_1405")) +      # Line for irr_304 in another color
+  labs(title = "Irradiance Levels over Time",
+       x = "Time",
+       y = "Irradiance") +
+  scale_color_manual(values = c("irr_256" = "blue", "irr_1175" = "green", "irr_1216" = "purple", "irr_1405" = "orange")) +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+
+```
+
+
+```{r, echo=FALSE}
+# Assuming modeldata has columns for all specified irradiances and fluxes
+ggplot(modeldata, aes(x = datetime)) +
+  geom_line(aes(y = irr_1175, color = "irr_1175")) +
+  geom_line(aes(y = irr_1405, color = "irr_1405")) +
+  labs(title = "Irradiance over Time",
+       x = "Time",
+       y = "Value") +
+  scale_color_manual(values = c(
+                                "irr_1175" = "red",
+                                "irr_1405" = "blue")) +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+```
+
+
+## Shorter Period  Patterns (Set duration)
+
+```{r, echo=FALSE}
+# Define the start and end date for the 3-month period
+start_date <- as.POSIXct("2019-01-01")  # Change to your desired start date
+end_date <- as.POSIXct("2019-03-28")    # Change to your desired end date
+
+# Filter the data for the specific 3-month period
+modeldata_filtered <- modeldata %>%
+  filter(datetime >= start_date & datetime <= end_date)
+
+# Create the plot
+ggplot(modeldata_filtered, aes(x = datetime, y = irr_1405)) +
+  geom_line(color = "blue") +                           # Line for irr_1216 over time
+  geom_point(data = subset(modeldata_filtered, binary == 1), 
+             aes(x = datetime, y = irr_1405), 
+             color = "red", size = 2) +                 # Red points for anomalies
+  labs(title = "irr_1405 over Time with Anomalies Highlighted",
+       x = "Time",
+       y = "irr_1405") +
+  theme_minimal()
+
+```
+
+# Model
+
+```{r}
+#split data
+set.seed(303) 
+sample_index <- sample(seq_len(nrow(modeldata)), size = 0.8 * nrow(modeldata))
+train_data <- modeldata[sample_index, ]
+test_data <- modeldata[-sample_index, ]
+
+
+#add sin and cos variables in training data
+train_data <- train_data %>%
+  mutate(day_of_year = yday(datetime))
+
+train_data <- train_data %>%
+  mutate(
+    irr_cos = cos(2 * pi * day_of_year / 365)
+  )
+
+#add sin and cos in test data
+test_data <- test_data %>%
+  mutate(day_of_year = yday(datetime))
+
+test_data <- test_data %>%
+  mutate(
+    irr_cos = cos(2 * pi * day_of_year / 365)
+  )
+
+
+#model_log_cos <- glm(binary ~ xrsb_flux_electrons + xrsa_flux_electrons + irr_cos,data = train_data, family = binomial)
+
+#model_log_eda <- glm(binary ~ xrsb_flux_electrons + xrsa_flux_electrons + xrsa_flag + xrsa_flux_observed + xrsb_flag + irr_cos, data = train_data, family = binomial)
+
+model_log_eda <- glm(binary ~ xrsb_flux_electrons + xrsa_flux_electrons + xrsb_flux_observed + xrsb_flux + irr_cos, data = train_data, family = binomial)
+
+summary(model_log_eda)
+```
+
+```{r, echo=FALSE}
+# Predict probabilities on the test set
+prob_logistic <- predict(model_log_eda, test_data, type = "response")
+predictions_logistic <- ifelse(prob_logistic > 0.5, 1, 0)
+
+# Calculate accuracy
+accuracy_logistic <- mean(predictions_logistic == test_data$binary)
+print(paste("Logistic Regression Accuracy:", accuracy_logistic))
+
+# ROC curve and AUC
+library(pROC)
+roc_logistic <- roc(test_data$binary, prob_logistic)
+auc_logistic <- auc(roc_logistic)
+print(paste("Logistic Regression AUC:", auc_logistic))
+
+```
+
+
+```{r, echo=FALSE}
+
+ggplot(modeldata, aes(x = datetime)) +
+  geom_line(aes(y = irr_1405), color = "blue") +  # Set line color to blue
+  theme_minimal() +
+  labs(title = "irr_1405 over Time",
+       x = "Time",
+       y = "irr_1405") +
+  theme(legend.title = element_blank())
+
+```
+
+```{r}
+
+library(caret)
+library(pROC)
+library(dplyr)
+
+# Ensure 'binary' column is treated as a factor with two levels
+modeldata$binary <- factor(modeldata$binary, levels = c(0, 1), labels = c("No", "Yes"))
+
+# Add cos variable to the entire dataset
+modeldata <- modeldata %>%
+  mutate(day_of_year = yday(datetime)) %>%
+  mutate(irr_cos = cos(2 * pi * day_of_year / 365))
+
+# Set up cross-validation with 5 folds
+set.seed(303)
+control <- trainControl(method = "cv", number = 5, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+# Define the formula for the logistic regression model
+formula_eda <- binary ~ xrsb_flux_electrons + xrsa_flux_electrons + xrsb_flux_observed + xrsb_flux + irr_cos
+
+# Train the logistic regression model using cross-validation
+model_log_cv <- caret::train(
+  formula_eda,
+  data = modeldata,
+  method = "glm",
+  family = binomial,
+  trControl = control,
+  metric = "ROC"
+)
+
+# Print cross-validation results
+print(model_log_cv)
+
+# Predict probabilities on the full dataset for ROC analysis
+prob_log_cv <- predict(model_log_cv, modeldata, type = "prob")[, 2]  # Probability of "Yes"
+predictions_log_cv <- ifelse(prob_log_cv > 0.5, "Yes", "No")
+
+# Calculate accuracy on the full dataset (for comparison)
+accuracy_log_cv <- mean(predictions_log_cv == modeldata$binary)
+print(paste("Cross-Validated Logistic Regression Accuracy:", accuracy_log_cv))
+
+# Calculate ROC curve and AUC
+roc_log_cv <- roc(modeldata$binary, prob_log_cv, levels = c("No", "Yes"), direction = "<")
+auc_log_cv <- auc(roc_log_cv)
+print(paste("Cross-Validated Logistic Regression AUC:", round(auc_log_cv, 4)))
+
+# Plot the ROC curve
+plot(roc_log_cv, col = "blue", main = "ROC Curve (Logistic Regression with CV)")
+
+# Plot the ROC curve with reversed x-axis
+plot(
+  roc_log_cv,
+  col = "blue",
+  main = "ROC Curve (Logistic Regression with CV)",
+  xlim = c(1, 0),  # Reverse x-axis limits
+  xlab = "Specificity (1 - False Positive Rate)",
+  ylab = "Sensitivity (True Positive Rate)"
+)
+```
+
+```{r}
+library(ROCR)
+
+# Use predictions and labels to calculate the ROC
+prob_log_cv <- predict(model_log_cv, modeldata, type = "prob")[, 2]  # Probability of "Yes"
+pred <- prediction(prob_log_cv, modeldata$binary)
+
+# Calculate performance
+perf <- performance(pred, "tpr", "fpr")
+
+# Plot ROC curve with colorization and reversed x-axis
+plot(
+  perf, 
+  colorize = TRUE,
+  main = "ROC Curve (Logistic Regression with CV)",
+  xlim = c(0, 1),  # Reverse x-axis
+  asp = 0.5
+)
+
+
+```
+
+
+
+
