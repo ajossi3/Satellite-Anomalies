@@ -1,0 +1,406 @@
+---
+title: "AnomalyModel"
+author: "Andrew Jossi"
+date: "2024-11-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tinytex)
+library(tidyverse)
+library(knitr)
+library(ggplot2)
+library(pROC)
+library(MASS)
+library(glmnet)
+library(lubridate)
+library(stringr)
+library(readxl)
+library(dplyr)
+
+
+```
+
+## Correlations
+
+```{r, include= F}
+modeldata <- read_csv("modeldata.csv")
+#summary(modeldata)
+colnames(modeldata)
+```
+
+```{r}
+# Compute Spearman correlation for each variable against binary
+cor_results <- sapply(names(modeldata)[-ncol(modeldata)], function(var) {
+  cor(modeldata[[var]], modeldata$binary, method = "spearman")
+})
+
+print(cor_results)
+```
+```{r, warning=FALSE}
+# Compute Spearman correlation with p-values
+cor_with_p <- lapply(names(modeldata)[-ncol(modeldata)], function(var) {
+  test <- cor.test(modeldata[[var]], modeldata$binary, method = "spearman")
+  c(correlation = test$estimate, p_value = test$p.value)
+})
+
+# Combine results into a data frame
+cor_results_df <- do.call(rbind, cor_with_p)
+rownames(cor_results_df) <- names(modeldata)[-ncol(modeldata)]
+
+# Filter significant correlations (e.g., p < 0.05)
+significant_corrs_df <- cor_results_df[cor_results_df[, "p_value"] < 0.05, ]
+print(significant_corrs_df)
+
+```
+```{r}
+library(ggplot2)
+
+# Remove the "...1" variable from the data
+significant_corrs_df <- significant_corrs_df[rownames(significant_corrs_df) != "...1", ]
+
+# Convert significant correlations to a data frame for plotting
+plot_data <- as.data.frame(significant_corrs_df)
+plot_data$Variable <- rownames(significant_corrs_df)
+plot_data$Correlation <- as.numeric(plot_data$correlation)
+plot_data$P_Value <- as.numeric(plot_data$p_value)
+
+# Create a bar plot of significant correlations
+ggplot(plot_data, aes(x = reorder(Variable, Correlation), y = Correlation, fill = Correlation)) +
+  geom_bar(stat = "identity", color = "black") +
+  coord_flip() +  # Flip for better readability
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+  labs(
+    title = "Significant Spearman Correlations",
+    x = "Variable",
+    y = "Correlation",
+    fill = "Correlation"
+  ) +
+  theme_minimal()
+
+```
+```{r}
+corr_data <- modeldata[, c("xrsb_flux_electrons", "xrsa_flux_electrons", "xrsa_flag", "xrsa_flux_observed", "xrsb_flag", "binary")]
+
+library(ggcorrplot)
+# Calculate the correlation matrix for numeric columns
+cor_matrix <- cor(corr_data, use = "complete.obs")
+
+# Generate the heatmap
+ggcorrplot(cor_matrix, 
+           hc.order = TRUE, 
+           type = "lower", 
+           lab = TRUE, 
+           title = "Correlation Heatmap of All Variables",
+           colors = c("blue", "white", "red"))
+
+```
+
+
+
+
+```{r, echo = TRUE}
+# Let's sort these correlations
+correlation_matrix <- cor(modeldata[sapply(modeldata, is.numeric)], use = "complete.obs")
+
+binary_correlation <- correlation_matrix[, "binary"]
+
+sorted_correlations <- sort(abs(binary_correlation), decreasing = TRUE)
+print(sorted_correlations)
+```
+This code calculates and sorts the Pearson linear correlations between each numeric value in modeldata and the target variable binary (indicating anomalies). `xrsb_flux_electrons` (0.45) and `xrsa_flux_electrons` (0.38) have the strongest correlations with the anomaly binary. Other variables like `xrsa_flag` and `xrsa_flux_observed` show moderate correlations. Most of the irradiances have weak relationships with binary. 
+
+
+
+## Training and Test Sets
+```{r, echo = TRUE}
+set.seed(303)
+sample_index <- sample(seq_len(nrow(modeldata)), size = 0.8 * nrow(modeldata))
+train_val_data <- modeldata[sample_index, ]
+test_data <- modeldata[-sample_index, ]
+
+train_index <- sample(seq_len(nrow(train_val_data)), size = 0.75 * nrow(train_val_data))
+train_data <- train_val_data[train_index, ]
+validation_data <- train_val_data[-train_index, ]
+
+```
+Set the random seed to ensure reproducibility. Randomly select 80% of the rows in modeldata to use as the training set, while 20% is used for testing. 
+
+
+## Logistic Model
+```{r}
+#model_logistic <- glm(binary ~ xrsb_flux_electrons + xrsa_flux_electrons + xrsa_flag + xrsb_flag + xrsa_flux_observed, data = train_data, family = binomial)
+
+
+model_logistic <- glm(binary ~ xrsb_flux_electrons + xrsa_flux_electrons + xrsa_flux_observed + xrsb_flux_observed + xrsa_flag + xrsb_flag + hour.y + xrsb_flux + irr_284, data = train_data, family = binomial)
+
+#summary(model_logistic)
+```
+This is the logistic regression model used to predict anomalies. xrsb_flux_electrons and xrsa_flux_electrons are both statistically significant to the model with the other variables being slightly above statistically significant (p<0.05).
+
+
+```{r, echo=FALSE}
+# Load required packages
+library(pROC)
+library(knitr)
+
+# Fit the logistic regression model
+model_logistic <- glm(binary ~ xrsb_flux_electrons + xrsa_flux_electrons + xrsa_flux_observed + xrsb_flux_observed + xrsa_flag + xrsb_flag + hour.y + xrsb_flux + irr_284, data = train_data, family = binomial)
+#model_logistic <- glm(binary ~ xrsb_flux_electrons + xrsa_flux_electrons + xrsa_flag + xrsb_flag + xrsa_flux_observed, data = train_data, family = binomial)
+
+# Predict probabilities on the test set
+prob_logistic <- predict(model_logistic, test_data, type = "response")
+predictions_logistic <- ifelse(prob_logistic > 0.5, 1, 0)
+
+# Calculate accuracy
+accuracy_logistic <- mean(predictions_logistic == test_data$binary)
+
+# ROC curve and AUC
+# Explicitly set the direction argument to avoid automatic direction message
+roc_logistic <- roc(test_data$binary, prob_logistic, levels=c(0, 1), direction="<")
+auc_logistic <- auc(roc_logistic)
+
+# Display results in a presentable format for HTML output
+results <- data.frame(
+  Metric = c("Accuracy", "AUC"),
+  Value = c(accuracy_logistic, auc_logistic)
+)
+
+# Print results using kable for a nice HTML table
+kable(results, caption = "Logistic Regression Model Evaluation", format = "html", digits = 4)
+
+```
+This code evaluates the logistic regression model on the test dataset by predicting the probability of anomalies (`binary` variable). Predictions are classified as 1 (anomaly) if the probability is greater than or equal to 0.5 and 0 (no anomaly) otherwise. The model’s accuracy on the test data is then calculated as the proportion of correct predictions, yielding an accuracy of about 72%. 
+
+Additionally, an ROC (Receiver Operating Characteristic) curve is generated to assess the model’s ability to distinguish between anomalies and non-anomalies across different thresholds. The AUC (Area Under the Curve) value, approximately 0.79, indicates a good but not perfect model fit, with better-than-random performance in predicting anomalies. This evaluation provides insights into the model’s predictive power and reliability in identifying anomalies.
+
+```{r}
+# Create confusion matrix
+conf_matrix <- table(Predicted = predictions_logistic, Actual = test_data$binary)
+
+# Extract confusion matrix components
+TP <- conf_matrix[2, 2]  # True Positives
+TN <- conf_matrix[1, 1]  # True Negatives
+FP <- conf_matrix[2, 1]  # False Positives
+FN <- conf_matrix[1, 2]  # False Negatives
+
+# Calculate Sensitivity (Recall)
+sensitivity <- TP / (TP + FN)
+
+# Calculate Specificity
+specificity <- TN / (TN + FP)
+
+# Display results
+results <- data.frame(
+  Metric = c("Accuracy", "AUC", "Sensitivity", "Specificity"),
+  Value = c(accuracy_logistic, auc_logistic, sensitivity, specificity)
+)
+
+# Print results using kable for a nice HTML table
+kable(results, caption = "Logistic Regression Model Evaluation", format = "html", digits = 4)
+
+```
+
+```{r}
+library(caret)
+
+# Create confusion matrix
+conf_matrix <- confusionMatrix(
+  factor(predictions_logistic, levels = c(0, 1)), 
+  factor(test_data$binary, levels = c(0, 1))
+)
+
+conf_mat <- as.data.frame(conf_matrix$table)
+colnames(conf_mat) <- c("Prediction", "Actual", "Count")
+
+# Plot the confusion matrix using ggplot2
+ggplot(data = conf_mat, aes(x = Actual, y = Prediction, fill = Count)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  geom_text(aes(label = Count), vjust = 1.5, color = "white", size = 6) +
+  labs(
+    title = "Confusion Matrix",
+    x = "Actual",
+    y = "Predicted"
+  ) +
+  theme_minimal(base_size = 15)
+```
+
+
+
+```{r, echo=FALSE}
+roc_logistic <- suppressMessages(roc(test_data$binary, prob_logistic))
+
+# Plot the ROC curve
+plot(roc_logistic, col = "blue", lwd = 2, main = "ROC Curve for Logistic Regression")
+
+# Add AUC value to the plot
+legend("bottomright", legend = paste("AUC =", round(auc(roc_logistic), 3)), col = "blue", lwd = 2)
+
+
+```
+The ROC (Receiver Operating Characteristic) curve plots the true positive rate (TPR) against the false positive rate (FPR) at various decision thresholds, helping evaluate the performance of a classification model. The x-axis represents the FPR, while the y-axis represents the TPR, showing the trade-off between correctly identifying anomalies and incorrectly labeling non-anomalies.
+
+The AUC (Area Under the Curve) quantifies the model's ability to distinguish between classes, with values ranging from 0 to 1. An AUC of 0.5 indicates random guessing, while a value closer to 1 indicates strong performance. In this case, the model's AUC of 0.79 suggests good predictive ability.
+
+
+
+
+
+# Other Models
+
+```{r, eval=FALSE, echo=FALSE}
+library(rpart)
+model_tree <- rpart(binary ~ xrsb_flux_electrons + xrsa_flux_electrons + xrsa_flag + xrsa_flux_observed + xrsb_flag, data = train_data, method = "class")
+```
+
+```{r, eval=FALSE, echo=FALSE}
+# Predictions
+predictions_tree <- predict(model_tree, test_data, type = "class")
+
+# Calculate accuracy
+accuracy_tree <- mean(predictions_tree == test_data$binary)
+print(paste("Decision Tree Accuracy:", accuracy_tree))
+
+# AUC for decision tree
+prob_tree <- predict(model_tree, test_data, type = "prob")[,2]
+roc_tree <- roc(test_data$binary, prob_tree)
+auc_tree <- auc(roc_tree)
+print(paste("Decision Tree AUC:", auc_tree))
+```
+
+## Random Forest
+```{r, eval=FALSE, echo=FALSE}
+library(e1071)        
+library(randomForest)  
+library(rpart)      
+library(gbm)          
+library(caret)       
+```
+
+```{r, eval=FALSE, echo=FALSE}
+unique_counts <- sapply(train_data, function(x) length(unique(x)))
+low_unique_predictors <- names(unique_counts[unique_counts <= 5])
+print(low_unique_predictors)
+```
+
+```{r, eval=FALSE, echo=FALSE}
+library(dplyr)
+new_data <- modeldata %>%
+dplyr::  select(-xrsa_flag, -xrsb_flag, -year.y, -...1)
+```
+remove predictors with only binary outputs.
+
+```{r, eval=FALSE, echo=FALSE}
+set.seed(123)
+train_index <- createDataPartition(new_data$binary, p = 0.8, list = FALSE)
+train_data_new <- new_data[train_index, ]
+test_data_new <- new_data[-train_index, ]
+```
+
+```{r, eval=FALSE, echo=FALSE}
+# Create a new train_data_factor with binary as a factor
+train_data_factor <- train_data_new %>%
+  mutate(binary = factor(binary, levels = c(0, 1)))
+
+# Create a new test_data_factor with binary as a factor
+test_data_factor <- test_data_new %>%
+  mutate(binary = factor(binary, levels = c(0, 1)))
+
+# Ensure binary column in both datasets has consistent levels
+train_data_factor$binary <- factor(train_data_factor$binary, levels = c(0, 1))
+test_data_factor$binary <- factor(test_data_factor$binary, levels = c(0, 1))
+
+
+# Function to train and evaluate a model
+evaluate_model <- function(model, model_name) {
+  # Make predictions
+  predictions <- predict(model, test_data_factor)
+  
+  # Ensure predictions are factors
+  predictions <- factor(predictions, levels = levels(test_data_factor$binary))
+  
+  # Create confusion matrix
+  confusion_matrix <- confusionMatrix(predictions, test_data_factor$binary)
+  
+  # Extract accuracy and F1 score
+  accuracy <- confusion_matrix$overall["Accuracy"]
+  f1_score <- confusion_matrix$byClass["F1"]
+  
+  return(c(Model = model_name, Accuracy = accuracy, F1_Score = f1_score))
+}
+
+# List to store results
+results <- list()
+
+# 1. Support Vector Machine
+svm_model <- svm(binary ~ ., data = train_data_factor, kernel = "radial")
+results[[1]] <- evaluate_model(svm_model, "Support Vector Machine")
+
+# 2. Random Forest
+rf_model <- randomForest(binary ~ ., data = train_data_factor)
+results[[2]] <- evaluate_model(rf_model, "Random Forest")
+
+
+results_modeldata <- do.call(rbind, results)
+print(results_modeldata)
+```
+
+
+# RNN
+
+
+
+```{r}
+library(caret)
+library(dplyr)
+# Install and load necessary packages
+if (!require("caret")) install.packages("caret")
+if (!require("pROC")) install.packages("pROC")
+if (!require("dplyr")) install.packages("dplyr")
+
+library(caret)
+library(pROC)
+library(dplyr)
+
+# Ensure 'binary' column is treated as a factor with two levels
+modeldata$binary <- factor(modeldata$binary, levels = c(0, 1), labels = c("No", "Yes"))
+
+# Set up cross-validation with 5 folds
+set.seed(303)
+control <- trainControl(method = "cv", number = 5, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+# Define the formula for the logistic regression model
+formula_eda <- binary ~  xrsb_flux_electrons + xrsa_flux_electrons + xrsa_flag + xrsb_flag + xrsa_flux_observed
+
+# Train the logistic regression model using cross-validation
+model_log_cv <- caret::train(
+  formula_eda,
+  data = modeldata,
+  method = "glm",
+  family = binomial,
+  trControl = control,
+  metric = "ROC"
+)
+
+# Print cross-validation results
+print(model_log_cv)
+
+# Predict probabilities on the full dataset for ROC analysis
+prob_log_cv <- predict(model_log_cv, modeldata, type = "prob")[, 2]  # Probability of "Yes"
+predictions_log_cv <- ifelse(prob_log_cv > 0.5, "Yes", "No")
+
+# Calculate accuracy on the full dataset (for comparison)
+accuracy_log_cv <- mean(predictions_log_cv == modeldata$binary)
+print(paste("Cross-Validated Logistic Regression Accuracy:", accuracy_log_cv))
+
+# Calculate ROC curve and AUC
+roc_log_cv <- roc(modeldata$binary, prob_log_cv, levels = c("No", "Yes"), direction = "<")
+auc_log_cv <- auc(roc_log_cv)
+print(paste("Cross-Validated Logistic Regression AUC:", auc_log_cv))
+
+# Plot the ROC curve
+plot(roc_log_cv, col = "blue", main = "ROC Curve (Logistic Regression with CV)")
+```

@@ -1,0 +1,408 @@
+---
+title: "Forecast_Anomaly"
+author: "Andrew Jossi"
+date: "2024-11-19"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(knitr)
+library(tinytex)
+library(leaps)
+library(ISLR2)
+library(glmnet)
+library(readxl)
+library(ggplot2)
+library(dplyr)
+library(forecast)
+library(randomForest)
+library(caret)
+```
+
+## Anomaly Data
+
+```{r}
+g16_data <- read_excel("Space Weather Truth Data, 9-10-24/Data Set 2. Goes-16 Goes-17 Anomalies/g16_g17_exs_spw.xlsx", sheet = "g16_exs_spw")
+
+g17_data <- read_excel("Space Weather Truth Data, 9-10-24/Data Set 2. Goes-16 Goes-17 Anomalies/g16_g17_exs_spw.xlsx", sheet = "g17_exs_spw")
+```
+The tab 'g16_exs_spw' contains a list of the UTC dates and times of GOES-16 exs_spw anomalies from December 10, 2016 through March 14, 2022.
+The tab 'g17_exs_spw' contains a list of the UTC dates and times of GOES-17 exs_spw anomalies from March 28, 2018 through March 14, 2022
+
+```{r}
+g16_data$Timestamp <- as.POSIXct(g16_data$Timestamp, format="%Y-%m-%d %H:%M:%S", tz="UTC")
+g17_data$Timestamp <- as.POSIXct(g17_data$Timestamp, format="%Y-%m-%d %H:%M:%S", tz="UTC")
+
+# Combine the two datasets
+combined_data <- rbind(g16_data, g17_data)
+```
+
+
+## Anomaly Decomposition
+```{r}
+# Aggregate g16_data by month to count anomalies per month
+g16_monthly <- g16_data %>%
+  mutate(month = as.Date(cut(Datetime, breaks = "month"))) %>%
+  group_by(month) %>%
+  summarise(count = n())
+
+# Aggregate g17_data by month to count anomalies per month
+g17_monthly <- g17_data %>%
+  mutate(month = as.Date(cut(Datetime, breaks = "month"))) %>%
+  group_by(month) %>%
+  summarise(count = n())
+
+combined_data_mo <- rbind(g16_monthly, g17_monthly)
+
+# Create Time Series
+g16_ts <- ts(g16_monthly$count, start=c(2016, 12), frequency=12)
+g17_ts <- ts(g17_monthly$count, start=c(2018, 3), frequency=12)
+gboth_ts <- ts(combined_data_mo$count, start=c(2016, 12), frequency=12)
+```
+
+```{r}
+# Decompose the time series for g16_data
+gboth_decomp <- decompose(gboth_ts)
+plot(gboth_decomp)
+```
+
+## Logistic Model
+```{r, echo=FALSE}
+modeldata <- read_csv("modeldata.csv")
+#View(modeldata)
+
+#add a datetime column
+modeldata$datetime <- as.POSIXct(
+  paste(modeldata$year.y, modeldata$month.y, modeldata$day.y, modeldata$hour.y, modeldata$minute.y),
+  format = "%Y %m %d %H %M",
+  tz = "UTC"  
+)
+```
+
+### Training and Test Sets
+```{r, echo = TRUE}
+set.seed(303)
+sample_index <- sample(seq_len(nrow(modeldata)), size = 0.8 * nrow(modeldata))
+train_val_data <- modeldata[sample_index, ]
+test_data <- modeldata[-sample_index, ]
+
+train_index <- sample(seq_len(nrow(train_val_data)), size = 0.75 * nrow(train_val_data))
+train_data <- train_val_data[train_index, ]
+validation_data <- train_val_data[-train_index, ]
+colnames(modeldata)
+```
+
+# First Logsitic Model
+```{r, echo=FALSE}
+
+# Fit the logistic regression model
+#model_logistic <- glm(binary ~ xrsb_flux_electrons + xrsa_flux_electrons + xrsa_flag, data = train_data, family = binomial)
+model_logistic <- glm(binary ~ xrsb_flux_electrons + xrsa_flux_electrons + xrsa_flux_observed + xrsb_flux_observed, data = train_data, family = binomial)
+
+# Predict probabilities on the test set
+prob_logistic <- predict(model_logistic, test_data, type = "response")
+predictions_logistic <- ifelse(prob_logistic > 0.5, 1, 0)
+
+# Calculate accuracy
+accuracy_logistic <- mean(predictions_logistic == test_data$binary)
+
+# ROC curve and AUC
+# Explicitly set the direction argument to avoid automatic direction message
+roc_logistic <- roc(test_data$binary, prob_logistic, levels=c(0, 1), direction="<")
+auc_logistic <- auc(roc_logistic)
+
+# Display results in a presentable format for HTML output
+results <- data.frame(
+  Metric = c("Accuracy", "AUC"),
+  Value = c(accuracy_logistic, auc_logistic)
+)
+
+# Print results using kable for a nice HTML table
+kable(results, caption = "Logistic Regression Model Evaluation", format = "html", digits = 4)
+```
+# Lasso
+
+```{r}
+# Prepare the training and test datasets for glmnet
+x_train <- as.matrix(train_data[, c("xrsb_flux_electrons", "xrsa_flux_electrons", 
+                                    "xrsa_flux_observed", "xrsb_flag", "xrsa_flag")])
+y_train <- train_data$binary
+
+x_test <- as.matrix(test_data[, c("xrsb_flux_electrons", "xrsa_flux_electrons", 
+                                  "xrsa_flux_observed", "xrsb_flag", "xrsa_flag")])
+y_test <- test_data$binary
+
+
+
+# Lasso regression model (alpha = 1)
+model_lasso <- cv.glmnet(x_train, y_train, alpha = 1, family = "binomial", type.measure = "class")
+
+# Get the best lambda (regularization parameter)
+best_lambda_lasso <- model_lasso$lambda.min
+
+# Predict on the test set
+prob_lasso <- predict(model_lasso, x_test, s = "lambda.min", type = "response")
+predictions_lasso <- ifelse(prob_lasso > 0.5, 1, 0)
+
+# Calculate accuracy
+accuracy_lasso <- mean(predictions_lasso == y_test)
+
+# ROC curve and AUC
+roc_lasso <- roc(y_test, prob_lasso, levels = c(0, 1), direction = "<")
+auc_lasso <- auc(roc_lasso)
+
+# Display results
+results_lasso <- data.frame(
+  Metric = c("Accuracy", "AUC"),
+  Value = c(accuracy_lasso, auc_lasso)
+)
+kable(results_lasso, caption = "Lasso Regression Model Evaluation", format = "html", digits = 4)
+```
+
+# Ridge
+
+```{r}
+# Ridge regression model (alpha = 0)
+model_ridge <- cv.glmnet(x_train, y_train, alpha = 0, family = "binomial", type.measure = "class")
+
+# Get the best lambda (regularization parameter)
+best_lambda_ridge <- model_ridge$lambda.min
+
+# Predict on the test set
+prob_ridge <- predict(model_ridge, x_test, s = "lambda.min", type = "response")
+predictions_ridge <- ifelse(prob_ridge > 0.5, 1, 0)
+
+# Calculate accuracy
+accuracy_ridge <- mean(predictions_ridge == y_test)
+
+# ROC curve and AUC
+roc_ridge <- roc(y_test, prob_ridge, levels = c(0, 1), direction = "<")
+auc_ridge <- auc(roc_ridge)
+
+# Display results
+results_ridge <- data.frame(
+  Metric = c("Accuracy", "AUC"),
+  Value = c(accuracy_ridge, auc_ridge)
+)
+kable(results_ridge, caption = "Ridge Regression Model Evaluation", format = "html", digits = 4)
+
+```
+
+
+# Add Cosine and Cross Validate
+```{r}
+
+library(caret)
+library(pROC)
+library(dplyr)
+
+# Ensure 'binary' column is treated as a factor with two levels
+modeldata$binary <- factor(modeldata$binary, levels = c(0, 1), labels = c("No", "Yes"))
+
+# Add cos variable to the entire dataset
+modeldata <- modeldata %>%
+  mutate(day_of_year = yday(datetime)) %>%
+  mutate(irr_cos = cos(2 * pi * day_of_year / 365))
+
+# Set up cross-validation with 5 folds
+set.seed(303)
+control <- trainControl(method = "cv", number = 5, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+# Define the formula for the logistic regression model
+formula_eda <- binary ~ xrsb_flux_electrons + xrsa_flux_electrons + xrsa_flag + xrsa_flux_observed + xrsb_flag + irr_cos
+
+# Train the logistic regression model using cross-validation
+model_log_cv <- caret::train(
+  formula_eda,
+  data = modeldata,
+  method = "glm",
+  family = binomial,
+  trControl = control,
+  metric = "ROC"
+)
+
+# Print cross-validation results
+print(model_log_cv)
+
+# Predict probabilities on the full dataset for ROC analysis
+prob_log_cv <- predict(model_log_cv, modeldata, type = "prob")[, 2]  # Probability of "Yes"
+predictions_log_cv <- ifelse(prob_log_cv > 0.5, "Yes", "No")
+
+# Calculate accuracy on the full dataset (for comparison)
+accuracy_log_cv <- mean(predictions_log_cv == modeldata$binary)
+print(paste("Cross-Validated Logistic Regression Accuracy:", accuracy_log_cv))
+
+# Calculate ROC curve and AUC
+roc_log_cv <- roc(modeldata$binary, prob_log_cv, levels = c("No", "Yes"), direction = "<")
+auc_log_cv <- auc(roc_log_cv)
+print(paste("Cross-Validated Logistic Regression AUC:", auc_log_cv))
+
+# Plot the ROC curve
+plot(roc_log_cv, col = "blue", main = "ROC Curve (Logistic Regression with CV)")
+
+```
+
+
+# Random Forest
+```{r}
+# Define the predictors and response
+predictors <- c("irr_256", "irr_284", "irr_304", "irr_1175", "irr_1216", "irr_1335", "irr_1405",
+                "MgII_EXIS", "MgII_standard", "xrsa_flux", "xrsa_flux_observed", "xrsa_flux_electrons",
+                "xrsb_flux", "xrsb_flux_observed", "xrsb_flux_electrons", "xrsa_flag", "xrsb_flag")
+
+# Prepare the training and test datasets
+x_train <- train_data[, predictors]
+y_train <- train_data$binary
+
+x_test <- test_data[, predictors]
+y_test <- test_data$binary
+
+# Fit a Random Forest model
+set.seed(303)
+model_rf <- randomForest(x = x_train, y = as.factor(y_train), ntree = 500, importance = TRUE)
+
+# Check the model summary
+print(model_rf)
+
+```
+```{r}
+# Predict on the test set
+predictions_rf <- predict(model_rf, x_test)
+
+# Calculate accuracy
+accuracy_rf <- mean(predictions_rf == y_test)
+
+# ROC curve and AUC
+prob_rf <- predict(model_rf, x_test, type = "prob")[, 2]  # Get the probabilities for class 1
+roc_rf <- roc(y_test, prob_rf, levels = c(0, 1), direction = "<")
+auc_rf <- auc(roc_rf)
+
+# Display results
+results_rf <- data.frame(
+  Metric = c("Accuracy", "AUC"),
+  Value = c(accuracy_rf, auc_rf)
+)
+#kable(results_rf, caption = "Random Forest Model Evaluation", format = "html", digits = 4)
+
+# Plot feature importance
+importance(model_rf)
+varImpPlot(model_rf)
+
+```
+
+```{r}
+# List of relevant predictors (remove datetime from predictors)
+relevant_columns <- c("irr_256", "irr_284", "irr_304", "irr_1175", "irr_1216", "irr_1335", "irr_1405", 
+                      "MgII_EXIS", "MgII_standard", "xrsa_flux", "xrsa_flux_observed", "xrsa_flux_electrons", 
+                      "xrsb_flux", "xrsb_flux_observed", "xrsb_flux_electrons", "xrsa_flag", "xrsb_flag", 
+                      "binary")  # 'binary' is the target column
+
+# Assuming your data is sorted by datetime (in ascending order)
+modeldata_lag <- modeldata %>%
+  arrange(datetime)
+
+# Select only the relevant columns (including 'binary')
+modeldata_lag <- modeldata_lag %>%
+  dplyr::select(all_of(relevant_columns))  # Select only the relevant columns
+
+# Create lagged variables for selected predictors
+lags <- c(1, 2, 3)  # Define the lags (1 lag, 2 lag, 3 lag)
+
+# Loop through the predictors to create lagged features
+for (lag in lags) {
+  modeldata_lag <- modeldata_lag %>%
+    mutate(
+      across(
+        .cols = c(irr_256, irr_284, irr_304, irr_1175, irr_1216, irr_1335, irr_1405, 
+                  MgII_EXIS, MgII_standard, xrsa_flux, xrsa_flux_observed, xrsa_flux_electrons, 
+                  xrsb_flux, xrsb_flux_observed, xrsb_flux_electrons, xrsa_flag, xrsb_flag),
+        .fns = list(lagged = ~lag(., n = lag)),
+        .names = "{col}_lag{lag}"
+      )
+    )
+}
+
+# Check the structure of the modeldata_lag to see the new lag variables
+head(modeldata_lag)
+
+# Remove any rows with NAs that were generated due to lagging
+modeldata_lag <- na.omit(modeldata_lag)
+
+
+```
+```{r}
+# Split the data: 80% train, 20% test
+set.seed(123)  # For reproducibility
+train_index <- floor(0.8 * nrow(modeldata_lag))
+
+train_data <- modeldata_lag[1:train_index, ]
+test_data <- modeldata_lag[(train_index + 1):nrow(modeldata_lag), ]
+
+# Build a Random Forest model
+rf_model <- randomForest(as.factor(binary) ~ ., data = train_data, ntree = 500, importance = TRUE)
+
+# Predict on the test set
+predictions <- predict(rf_model, newdata = test_data)
+
+# Confusion Matrix
+confusionMatrix(predictions, as.factor(test_data$binary))
+
+
+```
+
+```{r}
+# Get feature importance
+importance_rf <- importance(rf_model)
+
+# Sort the importance values in decreasing order
+sorted_importance <- importance_rf[order(importance_rf[, 1], decreasing = TRUE), ]
+
+# Print the top 10 most important variables
+print(head(sorted_importance, 10))
+
+# Create a new model with only the most important features (e.g., top 10 variables)
+top_features <- rownames(sorted_importance)[1:30]
+train_data_selected <- train_data[, c(top_features, "binary")]
+test_data_selected <- test_data[, c(top_features, "binary")]
+
+# Build a new Random Forest model using only the selected features
+rf_model_selected <- randomForest(as.factor(binary) ~ ., data = train_data_selected, ntree = 500, importance = TRUE)
+
+# Predict and evaluate the model
+predictions_selected <- predict(rf_model_selected, newdata = test_data_selected)
+confusionMatrix(predictions_selected, as.factor(test_data_selected$binary))
+
+
+```
+
+```{r}
+
+```
+
+
+# cross validation
+
+```{r}
+# Define the training control for cross-validation
+train_control <- trainControl(method = "cv", 
+                              number = 5,           # Number of folds
+                              savePredictions = "final", # Save predictions for the final model
+                              classProbs = TRUE,      # For classification problems
+                              summaryFunction = twoClassSummary, # Performance metrics (e.g., ROC, Sensitivity, Specificity)
+                              allowParallel = TRUE)   # Parallel execution (if available)
+
+# Train the random forest model with cross-validation
+rf_cv_model <- caret::train(as.factor(binary) ~ ., 
+                     data = modeldata_lag,    # Use the lagged dataset
+                     method = "rf",           # Random forest method
+                     trControl = train_control,
+                     metric = "Accuracy",     # Optimization metric
+                     ntree = 500)             # Number of trees
+
+# Print cross-validation results
+print(rf_cv_model)
+
+```
+
